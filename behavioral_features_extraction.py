@@ -4,6 +4,7 @@ Behavioral feature extraction functions for the analysis of social hierarchy beh
 """
 
 import pandas as pd
+import os
 import numpy as np 
 from shapely import polygons
 from shapely.geometry import MultiPoint
@@ -196,17 +197,18 @@ def compute_individual_features(df, individual, bp_list, anterior_bp, posterior_
     
     assert len(bp_angle) == 3, "bp_angle must contain exactly three bodyparts."
 
+    scorer = df.columns.get_level_values('scorer')[0]
     a = {
-        'x': df.loc[:, (slice(None), individual, bp_angle[0], 'x')].values,
-        'y': df.loc[:, (slice(None), individual, bp_angle[0], 'y')].values
+        'x': df.loc[:, (scorer, individual, bp_angle[0], 'x')].values,
+        'y': df.loc[:, (scorer, individual, bp_angle[0], 'y')].values
     }
     b = {
-        'x': df.loc[:, (slice(None), individual, bp_angle[1], 'x')].values,
-        'y': df.loc[:, (slice(None), individual, bp_angle[1], 'y')].values
+        'x': df.loc[:, (scorer, individual, bp_angle[1], 'x')].values,
+        'y': df.loc[:, (scorer, individual, bp_angle[1], 'y')].values
     }
     c = {
-        'x': df.loc[:, (slice(None), individual, bp_angle[2], 'x')].values,
-        'y': df.loc[:, (slice(None), individual, bp_angle[2], 'y')].values
+        'x': df.loc[:, (scorer, individual, bp_angle[2], 'x')].values,
+        'y': df.loc[:, (scorer, individual, bp_angle[2], 'y')].values
     }
 
     head_orientation = compute_orientation(a, b, c)
@@ -262,19 +264,20 @@ def compute_social_features(df, individuals, bp_list):
             features[f'{ind}_centroid_to_{other}_centroid_distance'] = centroid_dist
 
             # Snout to centroid angle between individuals
+            scorer = df.columns.get_level_values('scorer')[0]
             snout = {
-                'x': df.loc[:, (slice(None), ind, 'nose', 'x')].values,
-                'y': df.loc[:, (slice(None), ind, 'nose', 'y')].values
+                'x': df.loc[:, (scorer, ind, 'snout', 'x')].values,
+                'y': df.loc[:, (scorer, ind, 'snout', 'y')].values
             }
-            head = {
-                'x': df.loc[:, (slice(None), ind, 'head', 'x')].values,
-                'y': df.loc[:, (slice(None), ind, 'head', 'y')].values
+            center = {
+                'x': df.loc[:, (scorer, ind, 'center', 'x')].values,
+                'y': df.loc[:, (scorer, ind, 'center', 'y')].values
             }
             centroid_o = {
                 'x': centroid_other[:, 0],
                 'y': centroid_other[:, 1]
             }
-            snout_centroid_angle = compute_orientation(snout, head, centroid_o)
+            snout_centroid_angle = compute_orientation(snout, center, centroid_o)
             features[f'{ind}_snout_to_{other}_centroid_angle'] = snout_centroid_angle
 
         features_df = pd.DataFrame(features)
@@ -283,28 +286,57 @@ def compute_social_features(df, individuals, bp_list):
 
     return social_features
 
-def compute_full_features(df, individuals, bp_list, anterior_bp, posterior_bp):
+def compute_full_features(df_path, 
+                          individuals, 
+                          bp_list, 
+                          anterior_bp, 
+                          posterior_bp, 
+                          bp_angle, 
+                          save_dir=None, 
+                          file_format='csv'):
     """
     Main function to compute both individual and social features, returns one combined DataFrame.
+    
+    Args:
+        df_path (str): Path to the HDF5 file containing the DataFrame.
+        individuals (list): List of individuals (e.g., ['m1', 'm2', 'm3', 'm4']).
+        bp_list (list): List of bodyparts for centroid and hulls.
+        anterior_bp (str): Name of anterior bodypart (e.g., 'nose').
+        posterior_bp (str): Name of posterior bodypart (e.g., 'tailbase').
+        bp_angle (list): Body parts to compute angles for (e.g., ['nose', 'rightear', 'leftear']). Min number of bodyparts = 3.
+        save_dir (str): Directory to save the output files. If None, files are not saved.
+        file_format (str): Format to save the output files ('csv' or 'h5'). Default is 'csv'.
+    
+    Returns:
+        dict: Dictionary of feature DataFrames, one per individual.
     """
+    df = pd.read_hdf(df_path)
     df = interpolate_bp(df)
+    base_filename = os.path.splitext(os.path.basename(df_path))[0]
 
     # Individual features
     individual_features = []
     for ind in individuals:
-        ind_features = compute_individual_features(df, ind, bp_list, anterior_bp, posterior_bp)
+        ind_features = compute_individual_features(df, ind, bp_list, anterior_bp, posterior_bp, bp_angle)
         individual_features.append(ind_features)
 
     # Social features
     social_features_dict = compute_social_features(df, individuals, bp_list)
 
-    # Merge individual + social
-    full_features = []
+    # Save
+    all_features = {}
     for ind, ind_df in zip(individuals, individual_features):
         social_df = social_features_dict[ind]
         merged = pd.concat([ind_df.reset_index(drop=True), social_df.drop(columns='individual').reset_index(drop=True)], axis=1)
-        full_features.append(merged)
 
-    full_df = pd.concat(full_features, axis=0).reset_index(drop=True)
-    return full_df
+        # Save per individual
+        if save_dir is not None:
+            filename = os.path.join(save_dir, f"{base_filename}_{ind}.{file_format}")
+            if file_format == 'csv':
+                merged.to_csv(filename, index=False)
+            elif file_format == 'h5':
+                merged.to_hdf(filename, key='df', mode='w')
+            else:
+                raise ValueError("file_format must be 'csv' or 'h5'")
 
+        all_features[ind] = merged

@@ -5,6 +5,7 @@ Behavioral feature extraction functions for the analysis of social hierarchy beh
 
 import pandas as pd
 import os
+import glob
 import numpy as np 
 from shapely import polygons
 from shapely.geometry import MultiPoint
@@ -340,3 +341,57 @@ def compute_full_features(df_path,
                 raise ValueError("file_format must be 'csv' or 'h5'")
 
         all_features[ind] = merged
+
+def batch_compute_features(input_dir, 
+                            individuals, 
+                            bp_list, 
+                            anterior_bp, 
+                            posterior_bp, 
+                            bp_angle, 
+                            save_dir=None, 
+                            file_format='csv'):
+    """
+    Batch process all .h5 files in a directory with compute_full_features.
+
+    Args:
+        input_dir (str): Directory containing .h5 files.
+        individuals (list): List of individuals (e.g., ['m1', 'm2', 'm3', 'm4']).
+        bp_list (list): List of bodyparts for centroid and hulls.
+        anterior_bp (str): Name of anterior bodypart (e.g., 'nose').
+        posterior_bp (str): Name of posterior bodypart (e.g., 'tailbase').
+        bp_angle (list): List of body parts for orientation calculation (e.g., ['snout', 'rightear', 'leftear']).
+        save_dir (str, optional): Directory to save outputs. If None, saves next to each input file.
+        file_format (str): 'csv' or 'h5' output format.
+    
+    Returns:
+        dict: Dictionary where keys are input filenames and values are dicts of feature DataFrames per individual.
+    """
+    h5_files = glob.glob(os.path.join(input_dir, '*.h5'))
+    all_results = {}
+
+    print(f"Found {len(h5_files)} files to process.")
+
+    for h5_file in h5_files:
+        print(f"Processing file: {os.path.basename(h5_file)}")
+
+        if save_dir is None:
+            save_subdir = os.path.dirname(h5_file)  
+        else:
+            save_subdir = save_dir
+            os.makedirs(save_subdir, exist_ok=True)
+
+        results = compute_full_features(
+            df_path=h5_file,
+            individuals=individuals,
+            bp_list=bp_list,
+            anterior_bp=anterior_bp,
+            posterior_bp=posterior_bp,
+            bp_angle=bp_angle,
+            save_dir=save_subdir,
+            file_format=file_format
+        )
+
+        all_results[h5_file] = results
+
+    print("Batch processing complete.")
+

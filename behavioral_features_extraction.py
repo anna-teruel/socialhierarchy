@@ -165,5 +165,146 @@ def compute_speed(df, bp):
     speed = np.concatenate([[0], diffs])
     return speed
 
+def compute_individual_features(df, individual, bp_list, anterior_bp, posterior_bp, bp_angle):
+    """
+    Compute individual features (geometry, motion, head orientation) for one individual.
+    
+    Args:
+        df (pd.DataFrame): Full dataframe.
+        individual (str): Individual to process (e.g., 'm1').
+        bp_list (list): List of bodyparts for centroid/hull calculation.
+        anterior_bp (str): Name of anterior bodypart (e.g., 'nose').
+        posterior_bp (str): Name of posterior bodypart (e.g., 'tailbase').
+        bp_angle (str): Body part to compute angles for (e.g., 'nose', 'rightear', 'leftear). Min number of bodyparts = 3.
+    
+    Returns:
+        pd.DataFrame: DataFrame with features for the individual.
+    """
+    features = {}
+    df_ind = df.loc[:, (slice(None), individual)]
 
+    centroid = compute_centroid(df_ind, bp_list)
+    body_length = compute_body_length(df_ind, anterior_bp, posterior_bp)
+
+    centroid_speed = np.linalg.norm(np.diff(centroid, axis=0), axis=1)
+    centroid_speed = np.insert(centroid_speed, 0, 0)  # pad first frame
+
+    features['centroid_x'] = centroid[:, 0]
+    features['centroid_y'] = centroid[:, 1]
+    features['body_length'] = body_length
+    features['centroid_speed'] = centroid_speed
+    
+    assert len(bp_angle) == 3, "bp_angle must contain exactly three bodyparts."
+
+    a = {
+        'x': df.loc[:, (slice(None), individual, bp_angle[0], 'x')].values,
+        'y': df.loc[:, (slice(None), individual, bp_angle[0], 'y')].values
+    }
+    b = {
+        'x': df.loc[:, (slice(None), individual, bp_angle[1], 'x')].values,
+        'y': df.loc[:, (slice(None), individual, bp_angle[1], 'y')].values
+    }
+    c = {
+        'x': df.loc[:, (slice(None), individual, bp_angle[2], 'x')].values,
+        'y': df.loc[:, (slice(None), individual, bp_angle[2], 'y')].values
+    }
+
+    head_orientation = compute_orientation(a, b, c)
+    features['head_orientation'] = head_orientation
+
+    features_df = pd.DataFrame(features)
+    features_df['individual'] = individual
+
+    return features_df
+
+
+def compute_social_features(df, individuals, bp_list):
+    """
+    Compute social interaction features between individuals (IoU, distances, angles).
+    
+    Args:
+        df (pd.DataFrame): Full dataframe.
+        individuals (list): List of individuals (e.g., ['m1', 'm2', 'm3', 'm4']).
+        bp_list (list): List of bodyparts for centroid and hulls.
+
+    Returns:
+        dict: Dictionary of feature DataFrames, one per individual.
+    """
+    hulls = {ind: get_hulls(df.loc[:, (slice(None), ind)], bp_list) for ind in individuals}
+    centroids = {ind: compute_centroid(df.loc[:, (slice(None), ind)], bp_list) for ind in individuals}
+    
+    social_features = {}
+
+    for ind in individuals:
+        features = {}
+        ref_hulls = hulls[ind]
+        others = [hulls[other] for other in individuals if other != ind]
+        other_labels = [other for other in individuals if other != ind]
+
+        # IoU
+        iou_df = compute_iou(ref_hulls, others, other_labels)
+        for col in iou_df.columns:
+            features[col] = iou_df[col]
+
+        # Social distances and angles
+        for other in other_labels:
+            snout_self = df.loc[:, (slice(None), ind, 'snout')].values
+            tailbase_other = df.loc[:, (slice(None), other, 'tailbase')].values
+            centroid_self = centroids[ind]
+            centroid_other = centroids[other]
+
+            # Snout to tailbase distance between individuals
+            snout_tailbase_dist = np.linalg.norm(snout_self - tailbase_other, axis=1)
+            features[f'{ind}_snout_to_{other}_tailbase_distance'] = snout_tailbase_dist
+
+            # Centroid to centroid distance between individuals
+            centroid_dist = np.linalg.norm(centroid_self - centroid_other, axis=1)
+            features[f'{ind}_centroid_to_{other}_centroid_distance'] = centroid_dist
+
+            # Snout to centroid angle between individuals
+            snout = {
+                'x': df.loc[:, (slice(None), ind, 'nose', 'x')].values,
+                'y': df.loc[:, (slice(None), ind, 'nose', 'y')].values
+            }
+            head = {
+                'x': df.loc[:, (slice(None), ind, 'head', 'x')].values,
+                'y': df.loc[:, (slice(None), ind, 'head', 'y')].values
+            }
+            centroid_o = {
+                'x': centroid_other[:, 0],
+                'y': centroid_other[:, 1]
+            }
+            snout_centroid_angle = compute_orientation(snout, head, centroid_o)
+            features[f'{ind}_snout_to_{other}_centroid_angle'] = snout_centroid_angle
+
+        features_df = pd.DataFrame(features)
+        features_df['individual'] = ind
+        social_features[ind] = features_df
+
+    return social_features
+
+def compute_full_features(df, individuals, bp_list, anterior_bp, posterior_bp):
+    """
+    Main function to compute both individual and social features, returns one combined DataFrame.
+    """
+    df = interpolate_bp(df)
+
+    # Individual features
+    individual_features = []
+    for ind in individuals:
+        ind_features = compute_individual_features(df, ind, bp_list, anterior_bp, posterior_bp)
+        individual_features.append(ind_features)
+
+    # Social features
+    social_features_dict = compute_social_features(df, individuals, bp_list)
+
+    # Merge individual + social
+    full_features = []
+    for ind, ind_df in zip(individuals, individual_features):
+        social_df = social_features_dict[ind]
+        merged = pd.concat([ind_df.reset_index(drop=True), social_df.drop(columns='individual').reset_index(drop=True)], axis=1)
+        full_features.append(merged)
+
+    full_df = pd.concat(full_features, axis=0).reset_index(drop=True)
+    return full_df
 

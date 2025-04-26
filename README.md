@@ -1,2 +1,0 @@
-# socialhierarchy
-Social Hierarchy project

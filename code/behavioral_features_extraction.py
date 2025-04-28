@@ -2,37 +2,136 @@
 Behavioral feature extraction functions for the analysis of social hierarchy behavior
 @author Anna Teruel-Sanchis, April 2025
 """
-
-import pandas as pd
 import os
 import glob
 import numpy as np 
+import pandas as pd
 from shapely import polygons
 from shapely.geometry import MultiPoint
+import matplotlib.pyplot as plt
+import seaborn as sns
+from statsmodels.tsa.arima.model import ARIMA
+from scipy.interpolate import CubicSpline
 
-def interpolate_bp(df, method='linear', limit_direction='both'):
+def check_nans(directory, 
+               file_format='csv'):
     """
-    Sometimes, if predictions fails, the x and y coordinates are NaN or missing values. 
-    This function fills those missing values by interpolating the x and y coordinates. 
+    Check percentage of NaNs in all files in a directory (either .h5 or .csv).
     
     Args:
-        df (pd.DataFrame): the input dataframe (DLC multiindex: scorer, individual, bodypart, coord)
-        method (str): interpolation method, includes 'linear', 'nearest', 'zero', 'slinear', 'quadratic', 'cubic'. Default 'linear'
-        limit_direction (str): Direction for filling NaNs (default 'both')
-    
-    Returns:
-        pd.DataFrame: New dataframe with interpolated x and y coordinates
+        directory (str): Path to the directory containing the files.
+        file_format (str): File format to process ('csv' or 'h5').
+
+    Prints:
+        Filename and percentage of NaNs for each file.
     """
+    if file_format not in ['csv', 'h5']:
+        raise ValueError("file_format must be 'csv' or 'h5'.")
+
+    files = [f for f in os.listdir(directory) if f.endswith(f'.{file_format}')]
+    print(f"Found {len(files)} .{file_format} files in {directory}")
+
+    for file in sorted(files):
+        file_path = os.path.join(directory, file)
+        try:
+            if file_format == 'csv':
+                df = pd.read_csv(file_path)
+            elif file_format == 'h5':
+                df = pd.read_hdf(file_path)
+            
+            total_nans = df.isna().sum().sum()
+            total_elements = df.size
+            percent_nans = (total_nans / total_elements) * 100
+            print(f"{file}: {percent_nans:.4f}% NaNs")
+        
+        except Exception as e:
+            print(f"Could not process {file}: {e}")
+
+def apply_arima(series, order):
+        """
+        Apply ARIMA interpolation to a time series.
+        ARIMA models the relationship between a variable and its own past values. 
+        It works by forecasting future points based on the values that came before them.
+
+        Args:
+            series (pd.Series): Time series data to interpolate.
+            order (tuple): ARIMA model order (p, d, q).
+
+        Returns:
+            pd.Series: Interpolated time series.
+        """        
+        not_na = series.dropna()
+        if len(not_na) < 2:  # Not enough data to apply ARIMA
+            return series
+        
+        model = ARIMA(not_na, order=order)
+        model_fitted = model.fit()
+        forecast = model_fitted.predict(start=not_na.index[0], end=not_na.index[-1])
+        
+        return forecast
+    
+def apply_spline(series):
+        """
+        Apply Spline interpolation to a time series.
+        Spline interpolation fits a smooth curve through the data points. 
+        It’s particularly useful when the data exhibits smooth transitions and 
+        you don’t expect drastic changes between points.
+        
+        Args:
+            series (pd.Series): Time series data to interpolate.
+            
+        Returns:
+            pd.Series: Interpolated time series.
+        """        
+        not_na = series.dropna()
+        if len(not_na) < 2:  
+            return series
+        cs = CubicSpline(not_na.index, not_na.values, bc_type='natural')
+        return cs(series.index)
+            
+def interpolate_data(df, method='spline', order=(1, 1, 0)):
+    """
+    Interpolate missing data using either ARIMA or Spline interpolation.
+    Testing on different datasets, Spline interpolation works better. 
+
+    Args:
+        df (pd.DataFrame): Dataframe containing the x, y coordinates with missing values.
+        method (str): Interpolation method. Choose 'arima' or 'spline'. Default is 'spline'.
+        order (tuple): ARIMA model order (p, d, q). Used only if method='arima'. Default is (1, 1, 0).
+
+    Returns:
+        pd.DataFrame: DataFrame with interpolated x, y coordinates.
+    """
+    df_percent = (df.isna().sum().sum() / df.size) * 100
+    print(f"Percentage of NaNs in original DataFrame: {df_percent:.2f}%")
+
     x = df.loc[:, (slice(None), slice(None), slice(None), 'x')]
     y = df.loc[:, (slice(None), slice(None), slice(None), 'y')]
-    x_interp = x.interpolate(method=method, limit_direction=limit_direction, axis=0)
-    y_interp = y.interpolate(method=method, limit_direction=limit_direction, axis=0)
-    df.loc[:, (slice(None), slice(None), slice(None), 'x')] = x_interp
-    df.loc[:, (slice(None), slice(None), slice(None), 'y')] = y_interp
+    likelihood = df.loc[:, (slice(None), slice(None), slice(None), 'likelihood')]
+    
+    scorer = x.columns.levels[0]
+    for individual in x.columns.levels[1]:
+        for bodypart in x.columns.levels[2]:
+            if method == 'arima':
+                x_interp = apply_arima(x.loc[:, (scorer, individual, bodypart, 'x')], order)
+                y_interp = apply_arima(y.loc[:, (scorer, individual, bodypart, 'y')], order)
+                likelihood_interp = apply_arima(likelihood.loc[:, (scorer, individual, bodypart, 'likelihood')], order)    
+            elif method == 'spline':
+                x_interp = apply_spline(x.loc[:, (scorer, individual, bodypart, 'x')])
+                y_interp = apply_spline(y.loc[:, (scorer, individual, bodypart, 'y')])
+                likelihood_interp = apply_spline(likelihood.loc[:, (scorer, individual, bodypart, 'likelihood')])
+            else:
+                raise ValueError("Invalid method. Choose 'arima' or 'spline'.")
+            df.loc[:, (scorer, individual,bodypart, 'x')] = x_interp
+            df.loc[:, (scorer, individual, bodypart, 'y')] = y_interp
+            df.loc[:, (scorer, individual, bodypart, 'likelihood')] = likelihood_interp
 
+    df_percent_after = (df.isna().sum().sum() / df.size) * 100
+    print(f"Percentage of NaNs after interpolation: {df_percent_after:.2f}%")
     return df
 
-def get_hulls(data, bp_list):
+def get_hulls(data, 
+              bp_list):
     """
     Compute convex hulls for a list of body parts across all frames.
     The convex hull is the smallest convex shape that encloses all points in a set.
@@ -52,7 +151,9 @@ def get_hulls(data, bp_list):
     hulls = [MultiPoint(coords).convex_hull if len(coords) >= 3 else None for coords in coords_array]
     return hulls
 
-def compute_iou(hulls_ref, hulls_others, other_labels):
+def compute_iou(hulls_ref, 
+                hulls_others, 
+                other_labels):
     """
     Compute IoU (intersection over union) between a reference list of hulls and multiple others.
     IoU is a measure of overlap between two shapes, defined as the area of intersection divided by the area of union.
@@ -87,7 +188,8 @@ def compute_iou(hulls_ref, hulls_others, other_labels):
     
     return pd.DataFrame(ious)
 
-def compute_centroid(df, bodyparts):
+def compute_centroid(df, 
+                     bodyparts):
     """
     Computes centroid (mean x, mean y) across selected bodyparts.
     The centroid is the average position of all points in a shape.
@@ -104,7 +206,9 @@ def compute_centroid(df, bodyparts):
     y = df.loc[:, (slice(None), slice(None), bodyparts, 'y')].mean(axis=1)
     return np.stack([x, y], axis=1)
 
-def compute_body_length(df, anterior_bp, posterior_bp):
+def compute_body_length(df, 
+                        anterior_bp, 
+                        posterior_bp):
     """
     Computes body length between two bodyparts.
     The body length is the Euclidean distance between the two points.
@@ -167,7 +271,12 @@ def compute_speed(df, bp):
     speed = np.concatenate([[0], diffs])
     return speed
 
-def compute_individual_features(df, individual, bp_list, anterior_bp, posterior_bp, bp_angle):
+def compute_individual_features(df, 
+                                individual, 
+                                bp_list, 
+                                anterior_bp, 
+                                posterior_bp, 
+                                bp_angle):
     """
     Compute individual features (geometry, motion, head orientation) for one individual.
     
@@ -221,7 +330,9 @@ def compute_individual_features(df, individual, bp_list, anterior_bp, posterior_
     return features_df
 
 
-def compute_social_features(df, individuals, bp_list):
+def compute_social_features(df, 
+                            individuals, 
+                            bp_list):
     """
     Compute social interaction features between individuals (IoU, distances, angles).
     
@@ -294,7 +405,8 @@ def compute_full_features(df_path,
                           posterior_bp, 
                           bp_angle, 
                           save_dir=None, 
-                          file_format='csv'):
+                          file_format='csv',
+                          interpolate_method ='spline'):
     """
     Main function to compute both individual and social features, returns one combined DataFrame.
     
@@ -312,7 +424,7 @@ def compute_full_features(df_path,
         dict: Dictionary of feature DataFrames, one per individual.
     """
     df = pd.read_hdf(df_path)
-    df = interpolate_bp(df)
+    df = interpolate_data(df, interpolate_method)
     base_filename = os.path.splitext(os.path.basename(df_path))[0]
 
     # Individual features

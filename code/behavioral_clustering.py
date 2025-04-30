@@ -14,6 +14,11 @@ import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter, label
 from skimage.feature import peak_local_max
 from skimage.segmentation import watershed
+from sklearn.neural_network import MLPRegressor
+from sklearn.model_selection import train_test_split
+from scipy.ndimage import center_of_mass
+from scipy.cluster.hierarchy import dendrogram, linkage
+
 
 def load_features(directory, file_format='csv'):
     """
@@ -116,44 +121,239 @@ def run_umap(sampled_feats, n_neighbors=50, min_dist=0.1, n_components=2, random
     
     return embedding
 
-def run_watershed_clustering(embedding, bins=200, sigma=3.5, percentile=30, plot=True):
+def train_embedding_model(sampled_feats, embedding, save_model=False, save_path=None):
     """
-    Run watershed clustering on a 2D UMAP embedding.
+    Train a model to predict UMAP embeddings for new data.
+
+    Args:
+        sampled_feats (np.ndarray): Original high-dimensional features (frames x features).
+        embedding (np.ndarray): Corresponding UMAP embedding (frames x 2).
+        save_model (bool): Whether to save the trained model.
+        save_path (str): Path to save the model if save_model=True.
+
+    Returns:
+        MLPRegressor: Trained model.
+    """
+    x_train, x_test, y_train, y_test = train_test_split(sampled_feats, embedding, test_size=0.2, random_state=42)
+    
+    mlp = MLPRegressor(hidden_layer_sizes=(500, 250, 125, 50), max_iter=500, random_state=42)
+    mlp.fit(x_train, y_train)
+    
+    print(f"Training R^2: {mlp.score(x_train, y_train):.2f}")
+    print(f"Testing R^2: {mlp.score(x_test, y_test):.2f}")
+    
+    if save_model and save_path:
+        import joblib
+        joblib.dump(mlp, save_path)
+        print(f"Model saved to {save_path}")
+    
+    return mlp
+
+def predict_embeddings(model, new_feats):
+    """
+    Predict embeddings for new data using a trained model.
+
+    Args:
+        model (MLPRegressor): Trained model.
+        new_feats (np.ndarray): New high-dimensional features.
+
+    Returns:
+        np.ndarray: Predicted embeddings.
+    """
+    return model.predict(new_feats)
+
+def plot_umap_embedding(embedding, 
+                        color='black', 
+                        alpha=0.5, 
+                        size=1, 
+                        save=False, 
+                        save_dir=None,
+                        format = 'svg', 
+):
+    """
+    Plot the UMAP embedding as a scatter plot.
 
     Args:
         embedding (np.ndarray): 2D UMAP embedding (frames x 2).
-        bins (int): Number of bins for 2D histogram. Higher bins = more resolution.
-        sigma (float): Gaussian smoothing parameter.
-        percentile (float): Density threshold percentile to define peaks.
-        plot (bool): Whether to plot the density and labels.
+        color (str): Color of the points in the scatter plot.
+        alpha (float): Transparency of the points.
+        size (int): Size of the points in the scatter plot.
+        save (bool): Whether to save the plot.
+        save_dir (str): Directory to save the plot if save=True.
 
     Returns:
-        labeled_map (np.ndarray): Watershed labeled map.
-        density_map (np.ndarray): 2D density map.
-        xe, ye (np.ndarray): Bin edges in x and y.
+        None
     """
-    print('Computing density map...')
+    plt.figure(figsize=(10, 10))
+    plt.scatter(embedding[:, 0], embedding[:, 1], c=color, s=size, alpha=alpha)
+    plt.title("UMAP Embedding", fontsize=16)
+    plt.axis('off')
     
-    density_map, xe, ye = np.histogram2d(embedding[:, 0], embedding[:, 1], bins=bins, density=True)
+    if save:
+        if save_dir:
+            file_path = f"{save_dir}/umap_embedding.{format}"
+            plt.savefig(file_path, dpi=300, bbox_inches='tight', format=format)
+            print(f"UMAP embedding plot saved to {file_path}")
+        else:
+            print("Warning: save=True but no save_dir provided. Plot will not be saved.")
+    
+    plt.show()
+
+def map_density(embedding, 
+                bins=200, 
+                sigma=3.5, 
+                percentile=30,
+                cmap='plasma', 
+                plot=True):
+    """
+    Compute a density map from the UMAP embedding using a 2D histogram and watershed segmentation.
+    This function identifies clusters in the embedding space by calculating a smoothed density map,
+    applying a density threshold, and performing watershed segmentation to assign cluster labels.
+
+    The density map is computed using a 2D histogram of the embedding, smoothed with a Gaussian filter.
+    Local maxima in the density map are used as seeds for the watershed algorithm, which segments the
+    embedding space into distinct clusters.
+
+    Args:
+        embedding (np.ndarray): 2D UMAP embedding (frames x 2). Each row represents a point in the 
+                                embedding space, and the two columns represent the x and y coordinates.
+        bins (int, optional): Number of bins for the 2D histogram. Higher values result in finer resolution
+                              for the density map. Defaults to 200.
+        sigma (float, optional): Standard deviation for the Gaussian filter applied to the density map.
+                                 Larger values result in smoother density maps. Defaults to 3.5.
+        percentile (int, optional): Percentile threshold for density cutoff. Points below this density
+                                     threshold are excluded from clustering. Defaults to 30.
+        cmap (str, optional): Colormap for visualizing the density map. Defaults to 'plasma'.
+        plot (bool, optional): Whether to plot the density map and the resulting clusters. If True, the
+                               function visualizes the density map, cluster boundaries, and cluster labels.
+                               Defaults to True.
+
+    Returns:
+        labeled_map (np.ndarray): A 2D array where each element corresponds to a cluster label. The shape
+                                  matches the grid of the density map. Background points (not part of any
+                                  cluster) are labeled as NaN.
+        density_map (np.ndarray): A 2D array representing the smoothed density map of the embedding space.
+                                  Higher values indicate regions with higher point density.
+        xe (np.ndarray): 1D array of bin edges along the x-axis of the embedding space, corresponding to
+                         the 2D histogram.
+        ye (np.ndarray): 1D array of bin edges along the y-axis of the embedding space, corresponding to
+                         the 2D histogram.
+
+    Example:
+        >>> labeled_map, density_map, xe, ye = map_density(embedding, bins=200, sigma=3.5, percentile=30, plot=True)
+        >>> print(f"Labeled map shape: {labeled_map.shape}")
+        >>> print(f"Density map shape: {density_map.shape}")
+    """ 
+    
+    print("Computing density map...")
+
+    density_map, xe, ye = np.histogram2d(
+        embedding[:, 0], embedding[:, 1], bins=bins, density=True
+    )
     density_map = gaussian_filter(density_map, sigma=sigma)
 
-    local_max = peak_local_max(density_map, indices=False, footprint=np.ones((3, 3)), labels=density_map)
-    mask = density_map > np.percentile(density_map, percentile)
-    local_max = local_max & mask
-    markers, _ = label(local_max)
+    density_cutoff = np.percentile(density_map, percentile)
+    density_mask = density_map > density_cutoff
+    local_max = peak_local_max(
+        density_map, min_distance=5, footprint=np.ones((3, 3)), labels=density_mask
+    )
 
-    labeled_map = watershed(-density_map, markers, mask=mask)
+    local_max_mask = np.zeros_like(density_map, dtype=bool)
+    local_max_mask[tuple(local_max.T)] = True
+
+    markers, _ = label(local_max_mask)
+    labeled_map = watershed(-density_map, markers, mask=density_mask)
+    labeled_map = labeled_map.astype("float64")
 
     if plot:
-        plt.figure(figsize=(8, 6))
-        plt.imshow(density_map.T, origin='lower', cmap='magma')
-        plt.colorbar(label='Density')
-        plt.title('Density Map')
-        plt.show()
+        plt.figure(figsize=(20, 20))
 
-        plt.figure(figsize=(8, 6))
-        plt.imshow(labeled_map.T, origin='lower', cmap='tab20')
-        plt.title('Watershed Clusters')
+        im = plt.imshow(
+            density_map.T,
+            cmap=cmap,
+            origin="lower",
+            extent=[xe[0], xe[-1], ye[0], ye[-1]],
+            alpha=0.6
+        )
+
+        plt.contour(
+            labeled_map.T,
+            levels=np.arange(1, np.max(labeled_map) + 1),
+            colors="black",
+            linewidths=1.5,
+            origin="lower",
+            extent=[xe[0], xe[-1], ye[0], ye[-1]],
+        )
+
+        for i in np.unique(labeled_map):
+            if i == 0:
+                continue
+            com = center_of_mass(labeled_map == i)
+            cx = xe[0] + (xe[-1] - xe[0]) * com[0] / labeled_map.shape[0]
+            cy = ye[0] + (ye[-1] - ye[0]) * com[1] / labeled_map.shape[1]
+            plt.text(cx, cy, str(int(i)), color="black", fontsize=14, ha="center", va="center")
+
+        cbar = plt.colorbar(im)
+        tick_locs = [cbar.vmin, cbar.vmax]
+        cbar.set_ticks(tick_locs)
+        cbar.set_ticklabels(["lo", "hi"])
+        cbar.set_label("PDF")
+
+        plt.axis("off")
+        plt.title("Clustered Density with PDF", fontsize=16)
+        plt.tight_layout()
+        plt.tight_layout(pad=3.0)     
+
         plt.show()
 
     return labeled_map, density_map, xe, ye
+
+def hierarchical_clustering(embedding, labeled_map, xe, ye, method='ward', plot=True):
+    """
+    Perform hierarchical clustering on behavior clusters and optionally plot a dendrogram.
+
+    Args:
+        embedding (np.ndarray): UMAP 2D embedding (n_frames x 2).
+        labeled_map (np.ndarray): Watershed cluster map from density-based clustering.
+        xe (np.ndarray): x-axis bin edges from histogram2d.
+        ye (np.ndarray): y-axis bin edges from histogram2d.
+        method (str): Linkage method for hierarchical clustering (default 'ward').
+        plot (bool): Whether to plot the dendrogram.
+
+    Returns:
+        Z (np.ndarray): The linkage matrix used to construct the dendrogram.
+    """
+    x_idx = np.digitize(embedding[:, 0], xe) - 1
+    y_idx = np.digitize(embedding[:, 1], ye) - 1
+
+    valid = (
+        (x_idx >= 0) & (x_idx < labeled_map.shape[0]) &
+        (y_idx >= 0) & (y_idx < labeled_map.shape[1])
+    )
+    x_idx = x_idx[valid]
+    y_idx = y_idx[valid]
+    embedding_valid = embedding[valid]
+
+    cluster_labels = labeled_map[x_idx, y_idx]
+
+    valid_points = ~np.isnan(cluster_labels) & (cluster_labels > 0)
+    labels = cluster_labels[valid_points].astype(int)
+    embedding_valid = embedding_valid[valid_points]
+    unique_labels = np.unique(labels)
+    centroids = np.array([
+        embedding_valid[labels == lbl].mean(axis=0)
+        for lbl in unique_labels
+    ])
+
+    Z = linkage(centroids, method=method)
+
+    if plot:
+        plt.figure(figsize=(10, 5))
+        dendrogram(Z, labels=unique_labels)
+        plt.title("Hierarchical Clustering of Behavioral Clusters")
+        plt.xlabel("Cluster")
+        plt.ylabel("Distance")
+        plt.tight_layout()
+        plt.show()
+
+    return Z

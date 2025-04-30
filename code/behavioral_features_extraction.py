@@ -332,7 +332,6 @@ def compute_individual_features(df,
     features['head_orientation'] = head_orientation
 
     features_df = pd.DataFrame(features)
-    features_df['individual'] = individual
 
     return features_df
 
@@ -404,8 +403,11 @@ def compute_social_features(df,
             snout_centroid_angle = compute_orientation(snout, center, centroid_o)
             features[f'{ind}_snout_to_{other}_centroid_angle'] = snout_centroid_angle
 
+        #mean centroid distance to all other animals as a global interaction metric
+        centroid_dist_cols = [f'{ind}_centroid_to_{other}_centroid_distance' for other in other_labels]
+        features[f'{ind}_avg_centroid_distance'] = pd.DataFrame({col: features[col] for col in centroid_dist_cols}).mean(axis=1)
+            
         features_df = pd.DataFrame(features)
-        features_df['individual'] = ind
         social_features[ind] = features_df
 
     return social_features
@@ -454,7 +456,7 @@ def compute_full_features(df_path,
     all_features = {}
     for ind, ind_df in zip(individuals, individual_features):
         social_df = social_features_dict[ind]
-        merged = pd.concat([ind_df.reset_index(drop=True), social_df.drop(columns='individual').reset_index(drop=True)], axis=1)
+        merged = pd.concat([ind_df.reset_index(drop=True), social_df.reset_index(drop=True)], axis=1)
 
         # Save per individual
         if save_dir is not None:

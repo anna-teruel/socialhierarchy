@@ -18,6 +18,9 @@ from sklearn.neural_network import MLPRegressor
 from sklearn.model_selection import train_test_split
 from scipy.ndimage import center_of_mass
 from scipy.cluster.hierarchy import dendrogram, linkage
+import numpy.ma as ma
+import matplotlib.cm as cm
+
 
 
 def load_features(directory, file_format='csv'):
@@ -204,7 +207,10 @@ def map_density(embedding,
                 sigma=3.5, 
                 percentile=30,
                 cmap='plasma', 
-                plot=True):
+                plot=True, 
+                save=False,
+                save_dir=None, 
+                format='svg'):
     """
     Compute a density map from the UMAP embedding using a 2D histogram and watershed segmentation.
     This function identifies clusters in the embedding space by calculating a smoothed density map,
@@ -227,6 +233,11 @@ def map_density(embedding,
         plot (bool, optional): Whether to plot the density map and the resulting clusters. If True, the
                                function visualizes the density map, cluster boundaries, and cluster labels.
                                Defaults to True.
+        save (bool, optional): Whether to save the plot as an image file. If True, the plot will be saved
+                                 to the specified directory in the specified format. Defaults to False.
+        save_dir (str, optional): Directory where the plot will be saved if `save` is True. Defaults to None.
+        format (str, optional): Format for saving the plot if `save` is True. Supported formats include
+                                'png', 'svg', 'pdf', etc. Defaults to 'svg'.
 
     Returns:
         labeled_map (np.ndarray): A 2D array where each element corresponds to a cluster label. The shape
@@ -254,57 +265,79 @@ def map_density(embedding,
 
     density_cutoff = np.percentile(density_map, percentile)
     density_mask = density_map > density_cutoff
+
     local_max = peak_local_max(
-        density_map, min_distance=5, footprint=np.ones((3, 3)), labels=density_mask
+        density_map, min_distance=1, footprint=np.ones((3, 3)), labels=density_mask
     )
 
     local_max_mask = np.zeros_like(density_map, dtype=bool)
     local_max_mask[tuple(local_max.T)] = True
 
     markers, _ = label(local_max_mask)
-    labeled_map = watershed(-density_map, markers, mask=density_mask)
+    labeled_map = watershed(-density_map, 
+                            markers, 
+                            mask=density_mask, 
+                            connectivity=2)
     labeled_map = labeled_map.astype("float64")
 
     if plot:
-        plt.figure(figsize=(20, 20))
+        from matplotlib.colors import ListedColormap
+
+        plt.figure(figsize=(12, 10))
+
+        # Mask very low density regions
+        threshold = np.percentile(density_map, 30)
+        density_map[density_map < threshold] = np.nan
+
+        custom_cmap = cm.get_cmap(cmap).copy()
+        custom_cmap.set_bad(color='white')
 
         im = plt.imshow(
             density_map.T,
-            cmap=cmap,
+            cmap=custom_cmap,
             origin="lower",
             extent=[xe[0], xe[-1], ye[0], ye[-1]],
-            alpha=0.6
+            alpha=0.9, 
+            vmin=threshold,
         )
 
         plt.contour(
             labeled_map.T,
             levels=np.arange(1, np.max(labeled_map) + 1),
             colors="black",
-            linewidths=1.5,
+            linewidths=2,
             origin="lower",
             extent=[xe[0], xe[-1], ye[0], ye[-1]],
+            alpha=0.7
         )
 
         for i in np.unique(labeled_map):
             if i == 0:
                 continue
-            com = center_of_mass(labeled_map == i)
+            mask = labeled_map == i
+            if np.sum(mask) < 20:
+                continue  # skip tiny clusters
+            com = center_of_mass(mask)
             cx = xe[0] + (xe[-1] - xe[0]) * com[0] / labeled_map.shape[0]
             cy = ye[0] + (ye[-1] - ye[0]) * com[1] / labeled_map.shape[1]
-            plt.text(cx, cy, str(int(i)), color="black", fontsize=14, ha="center", va="center")
+            plt.text(cx, cy, str(int(i)), color="black", fontsize=10, ha="center", va="center")
 
-        cbar = plt.colorbar(im)
-        tick_locs = [cbar.vmin, cbar.vmax]
-        cbar.set_ticks(tick_locs)
-        cbar.set_ticklabels(["lo", "hi"])
-        cbar.set_label("PDF")
+        cbar = plt.colorbar(im, fraction=0.03, pad=0.04)
+        cbar.set_label("PDF", fontsize=12)
+        cbar.ax.tick_params(labelsize=10)
 
         plt.axis("off")
-        plt.title("Clustered Density with PDF", fontsize=16)
-        plt.tight_layout()
-        plt.tight_layout(pad=3.0)     
-
-        plt.show()
+        # plt.title("Clustered Behavioral Map", fontsize=14)
+        # plt.tight_layout()
+        if save:
+            if save_dir:
+                file_path = f"{save_dir}/umap_heatmap.{format}"
+                plt.savefig(file_path, dpi=300, bbox_inches='tight', format=format)
+                print(f"UMAP heatmap plot saved to {file_path}")
+            else:
+                print("Warning: save=True but no save_dir provided. Plot will not be saved.")
+        
+    plt.show()
 
     return labeled_map, density_map, xe, ye
 
@@ -348,7 +381,7 @@ def hierarchical_clustering(embedding, labeled_map, xe, ye, method='ward', plot=
     Z = linkage(centroids, method=method)
 
     if plot:
-        plt.figure(figsize=(10, 5))
+        plt.figure(figsize=(20, 15))
         dendrogram(Z, labels=unique_labels)
         plt.title("Hierarchical Clustering of Behavioral Clusters")
         plt.xlabel("Cluster")

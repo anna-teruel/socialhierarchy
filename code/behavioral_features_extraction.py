@@ -405,7 +405,7 @@ def compute_social_features(df,
 
         #mean centroid distance to all other animals as a global interaction metric
         centroid_dist_cols = [f'{ind}_centroid_to_{other}_centroid_distance' for other in other_labels]
-        features[f'{ind}_avg_centroid_distance'] = pd.DataFrame({col: features[col] for col in centroid_dist_cols}).mean(axis=1)
+        features['avg_centroid_distance'] = pd.DataFrame({col: features[col] for col in centroid_dist_cols}).mean(axis=1)
             
         features_df = pd.DataFrame(features)
         social_features[ind] = features_df

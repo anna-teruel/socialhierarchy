@@ -20,6 +20,8 @@ from scipy.ndimage import center_of_mass
 from scipy.cluster.hierarchy import dendrogram, linkage
 import numpy.ma as ma
 import matplotlib.cm as cm
+import seaborn as sns
+from scipy.ndimage import zoom
 
 
 
@@ -206,138 +208,141 @@ def map_density(embedding,
                 bins=200, 
                 sigma=3.5, 
                 percentile=30,
-                cmap='plasma', 
+                cmap='YlOrRd', 
                 plot=True, 
                 save=False,
                 save_dir=None, 
-                format='svg'):
+                format='svg',
+                bw_adjust=0.8,
+                kde_thresh=0.02,
+                kde_levels=100,
+                contour_smoothing=3):
     """
-    Compute a density map from the UMAP embedding using a 2D histogram and watershed segmentation.
-    This function identifies clusters in the embedding space by calculating a smoothed density map,
-    applying a density threshold, and performing watershed segmentation to assign cluster labels.
+    Compute a smooth density map from a 2D embedding using a KDE plot and identify clusters using 
+    watershed segmentation. This function supports optional plotting with smoothed cluster boundaries,
+    customizable visual appearance, and saving the resulting figure.
 
-    The density map is computed using a 2D histogram of the embedding, smoothed with a Gaussian filter.
-    Local maxima in the density map are used as seeds for the watershed algorithm, which segments the
-    embedding space into distinct clusters.
+    The density map is computed from a 2D histogram of the embedding and smoothed with a Gaussian filter. 
+    Cluster labels are obtained by applying watershed segmentation using local maxima in the density map. 
+    The resulting clusters are visualized as contour boundaries over a seaborn-based KDE heatmap.
 
     Args:
-        embedding (np.ndarray): 2D UMAP embedding (frames x 2). Each row represents a point in the 
-                                embedding space, and the two columns represent the x and y coordinates.
-        bins (int, optional): Number of bins for the 2D histogram. Higher values result in finer resolution
-                              for the density map. Defaults to 200.
-        sigma (float, optional): Standard deviation for the Gaussian filter applied to the density map.
-                                 Larger values result in smoother density maps. Defaults to 3.5.
-        percentile (int, optional): Percentile threshold for density cutoff. Points below this density
-                                     threshold are excluded from clustering. Defaults to 30.
-        cmap (str, optional): Colormap for visualizing the density map. Defaults to 'plasma'.
-        plot (bool, optional): Whether to plot the density map and the resulting clusters. If True, the
-                               function visualizes the density map, cluster boundaries, and cluster labels.
-                               Defaults to True.
-        save (bool, optional): Whether to save the plot as an image file. If True, the plot will be saved
-                                 to the specified directory in the specified format. Defaults to False.
-        save_dir (str, optional): Directory where the plot will be saved if `save` is True. Defaults to None.
-        format (str, optional): Format for saving the plot if `save` is True. Supported formats include
-                                'png', 'svg', 'pdf', etc. Defaults to 'svg'.
+        embedding (np.ndarray): 2D embedding (e.g., UMAP or t-SNE), shape (n_points, 2). Each row is a 
+                                2D coordinate representing a frame or sample in reduced space.
+        bins (int, optional): Number of bins for the 2D histogram used in density estimation. Higher values 
+                              provide finer resolution. Default is 200.
+        sigma (float, optional): Standard deviation for the Gaussian filter used to smooth the histogram-based 
+                                 density map. Larger values yield smoother maps. Default is 3.5.
+        percentile (int, optional): Percentile cutoff used to threshold low-density regions. Points below 
+                                    this threshold are excluded from watershed clustering. Default is 30.
+        cmap (str, optional): Colormap used for visualizing the KDE density plot. Default is 'YlOrRd'.
+        plot (bool, optional): Whether to plot the KDE density map overlaid with watershed-based cluster 
+                               contours and labels. Default is True.
+        save (bool, optional): Whether to save the figure to disk. If True, the plot will be saved using the 
+                               specified format and directory. Default is False.
+        save_dir (str, optional): Directory path to save the output plot if `save` is True. If None, the plot 
+                                  will not be saved. Default is None.
+        format (str, optional): File format to save the figure. Supported formats include 'svg', 'png', 'pdf', etc.
+                                Default is 'svg'.
+        bw_adjust (float, optional): Bandwidth adjustment for seaborn's KDE estimation. Higher values smooth 
+                                     the KDE more. Default is 0.8.
+        kde_thresh (float, optional): Minimum KDE density threshold below which values are not plotted. 
+                                      Useful to hide very low-density background. Default is 0.02.
+        kde_levels (int, optional): Number of contour levels in the KDE. Controls visual resolution. Default is 100.
+        contour_smoothing (int, optional): Zoom factor applied to upsample the watershed map before contouring, 
+                                           which results in smoother contour lines. Default is 3.
 
     Returns:
-        labeled_map (np.ndarray): A 2D array where each element corresponds to a cluster label. The shape
-                                  matches the grid of the density map. Background points (not part of any
-                                  cluster) are labeled as NaN.
-        density_map (np.ndarray): A 2D array representing the smoothed density map of the embedding space.
-                                  Higher values indicate regions with higher point density.
-        xe (np.ndarray): 1D array of bin edges along the x-axis of the embedding space, corresponding to
-                         the 2D histogram.
-        ye (np.ndarray): 1D array of bin edges along the y-axis of the embedding space, corresponding to
-                         the 2D histogram.
+        labeled_map (np.ndarray): 2D array of shape (bins, bins), where each nonzero element corresponds 
+                                  to a unique cluster label. Background regions are 0.
+        density_map (np.ndarray): Smoothed 2D histogram density map before thresholding or masking.
+        xe (np.ndarray): 1D array of bin edges along the x-axis used in the histogram.
+        ye (np.ndarray): 1D array of bin edges along the y-axis used in the histogram.
 
     Example:
-        >>> labeled_map, density_map, xe, ye = map_density(embedding, bins=200, sigma=3.5, percentile=30, plot=True)
-        >>> print(f"Labeled map shape: {labeled_map.shape}")
-        >>> print(f"Density map shape: {density_map.shape}")
-    """ 
+        >>> labeled_map, density_map, xe, ye = map_density(embedding, bins=200, sigma=4, percentile=35, 
+        ...                                                kde_levels=120, contour_smoothing=4, plot=True)
+        >>> print(np.unique(labeled_map))
+    """
     
     print("Computing density map...")
 
+    # 2D histogram and smoothing
     density_map, xe, ye = np.histogram2d(
         embedding[:, 0], embedding[:, 1], bins=bins, density=True
     )
     density_map = gaussian_filter(density_map, sigma=sigma)
 
+    # watershed segmentation
     density_cutoff = np.percentile(density_map, percentile)
     density_mask = density_map > density_cutoff
-
-    local_max = peak_local_max(
-        density_map, min_distance=1, footprint=np.ones((3, 3)), labels=density_mask
-    )
-
+    local_max = peak_local_max(density_map, min_distance=1, #in the paper they use 1 as default
+                               footprint=np.ones((3, 3)), labels=density_mask)
     local_max_mask = np.zeros_like(density_map, dtype=bool)
     local_max_mask[tuple(local_max.T)] = True
-
     markers, _ = label(local_max_mask)
-    labeled_map = watershed(-density_map, 
-                            markers, 
-                            mask=density_mask, 
-                            connectivity=2)
-    labeled_map = labeled_map.astype("float64")
+    labeled_map = watershed(-density_map, markers, mask=density_mask, connectivity=2).astype("float64")
 
     if plot:
-        from matplotlib.colors import ListedColormap
+        fig, ax = plt.subplots(figsize=(14, 12))
 
-        plt.figure(figsize=(12, 10))
-
-        # Mask very low density regions
-        threshold = np.percentile(density_map, 30)
-        density_map[density_map < threshold] = np.nan
-
-        custom_cmap = cm.get_cmap(cmap).copy()
-        custom_cmap.set_bad(color='white')
-
-        im = plt.imshow(
-            density_map.T,
-            cmap=custom_cmap,
-            origin="lower",
-            extent=[xe[0], xe[-1], ye[0], ye[-1]],
-            alpha=0.9, 
-            vmin=threshold,
+        # KDE heatmap
+        sns.kdeplot(
+            x=embedding[:, 0], 
+            y=embedding[:, 1], 
+            fill=True, 
+            cmap=cmap, 
+            bw_adjust=bw_adjust,
+            thresh=kde_thresh,
+            levels=kde_levels,
+            ax=ax
         )
 
-        plt.contour(
-            labeled_map.T,
+        # smoother contours
+        labeled_map_up = zoom(labeled_map, contour_smoothing, order=0)
+        x_range = xe[-1] - xe[0]
+        y_range = ye[-1] - ye[0]
+        extent_up = [xe[0], xe[0] + x_range, ye[0], ye[0] + y_range]
+
+        # overlay contours
+        ax.contour(
+            labeled_map_up.T,
             levels=np.arange(1, np.max(labeled_map) + 1),
             colors="black",
             linewidths=2,
             origin="lower",
-            extent=[xe[0], xe[-1], ye[0], ye[-1]],
+            extent=extent_up,
             alpha=0.7
         )
 
+        # Add cluster labels
         for i in np.unique(labeled_map):
             if i == 0:
                 continue
             mask = labeled_map == i
             if np.sum(mask) < 20:
-                continue  # skip tiny clusters
+                continue
             com = center_of_mass(mask)
             cx = xe[0] + (xe[-1] - xe[0]) * com[0] / labeled_map.shape[0]
             cy = ye[0] + (ye[-1] - ye[0]) * com[1] / labeled_map.shape[1]
-            plt.text(cx, cy, str(int(i)), color="black", fontsize=10, ha="center", va="center")
+            ax.text(cx, cy, str(int(i)), color="black", fontsize=10, ha="center", va="center")
 
-        cbar = plt.colorbar(im, fraction=0.03, pad=0.04)
+
+        mappable = ax.collections[0]
+        cbar = fig.colorbar(mappable, ax=ax, fraction=0.03, pad=0.04)
         cbar.set_label("PDF", fontsize=12)
         cbar.ax.tick_params(labelsize=10)
 
-        plt.axis("off")
-        # plt.title("Clustered Behavioral Map", fontsize=14)
-        # plt.tight_layout()
-        if save:
-            if save_dir:
-                file_path = f"{save_dir}/umap_heatmap.{format}"
-                plt.savefig(file_path, dpi=300, bbox_inches='tight', format=format)
-                print(f"UMAP heatmap plot saved to {file_path}")
-            else:
-                print("Warning: save=True but no save_dir provided. Plot will not be saved.")
-        
-    plt.show()
+        ax.axis("off")
+
+        if save and save_dir:
+            filepath = f"{save_dir}/umap_heatmap.{format}"
+            plt.savefig(filepath, dpi=300, format=format, bbox_inches='tight', pad_inches=0.5)
+            print(f"Plot saved to {filepath}")
+        elif save:
+            print("Warning: save=True but save_dir not specified.")
+
+        plt.show()
 
     return labeled_map, density_map, xe, ye
 
@@ -389,4 +394,4 @@ def hierarchical_clustering(embedding, labeled_map, xe, ye, method='ward', plot=
         plt.tight_layout()
         plt.show()
 
-    return Z
+    return Z,  cluster_labels

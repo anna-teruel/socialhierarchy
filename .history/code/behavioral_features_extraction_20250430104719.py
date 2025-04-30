@@ -413,7 +413,7 @@ def compute_social_features(df,
 def compute_full_features(df_path, 
                           individuals, 
                           bp_list, 
-                          head_bp,
+                          head_bp
                           anterior_bp, 
                           posterior_bp, 
                           bp_angle, 
@@ -427,7 +427,7 @@ def compute_full_features(df_path,
         df_path (str): Path to the HDF5 file containing the DataFrame.
         individuals (list): List of individuals (e.g., ['m1', 'm2', 'm3', 'm4']).
         bp_list (list): List of bodyparts for centroid and hulls.
-        head_bp (list): List of bodyparts for head centroid calculation (e.g., ['snout', 'rightear', 'leftear']).
+        
         anterior_bp (str): Name of anterior bodypart (e.g., 'nose').
         posterior_bp (str): Name of posterior bodypart (e.g., 'tailbase').
         bp_angle (list): Body parts to compute angles for (e.g., ['nose', 'rightear', 'leftear']). Min number of bodyparts = 3.
@@ -471,7 +471,6 @@ def compute_full_features(df_path,
 def batch_compute_features(input_dir, 
                             individuals, 
                             bp_list, 
-                            head_bp,
                             anterior_bp, 
                             posterior_bp, 
                             bp_angle, 
@@ -511,7 +510,6 @@ def batch_compute_features(input_dir,
             df_path=h5_file,
             individuals=individuals,
             bp_list=bp_list,
-            head_bp=head_bp,
             anterior_bp=anterior_bp,
             posterior_bp=posterior_bp,
             bp_angle=bp_angle,

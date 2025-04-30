@@ -370,7 +370,6 @@ def compute_social_features(df,
         # Social distances and angles
         for other in other_labels:
             snout_self = df.loc[:, (slice(None), ind, 'snout')].values
-            snout_other = df.loc[:, (slice(None), other, 'snout')].values
             tailbase_other = df.loc[:, (slice(None), other, 'tailbase')].values
             centroid_self = centroids[ind]
             centroid_other = centroids[other]
@@ -383,9 +382,10 @@ def compute_social_features(df,
             centroid_dist = np.linalg.norm(centroid_self - centroid_other, axis=1)
             features[f'{ind}_centroid_to_{other}_centroid_distance'] = centroid_dist
             
-            # Snout to snout distance between individuals
-            snout_dist = np.linalg.norm(snout_self - snout_other, axis=1)
-            features[f'{ind}_snout_to_{other}_snout_distance'] = snout_dist
+            # Centroid to centroid distance between individuals
+            centroid_dist = np.linalg.norm(centroid_self - centroid_other, axis=1)
+            features[f'{ind}_centroid_to_{other}_centroid_distance'] = centroid_dist
+
 
             # Snout to centroid angle between individuals
             scorer = df.columns.get_level_values('scorer')[0]
@@ -413,7 +413,6 @@ def compute_social_features(df,
 def compute_full_features(df_path, 
                           individuals, 
                           bp_list, 
-                          head_bp,
                           anterior_bp, 
                           posterior_bp, 
                           bp_angle, 
@@ -427,7 +426,6 @@ def compute_full_features(df_path,
         df_path (str): Path to the HDF5 file containing the DataFrame.
         individuals (list): List of individuals (e.g., ['m1', 'm2', 'm3', 'm4']).
         bp_list (list): List of bodyparts for centroid and hulls.
-        head_bp (list): List of bodyparts for head centroid calculation (e.g., ['snout', 'rightear', 'leftear']).
         anterior_bp (str): Name of anterior bodypart (e.g., 'nose').
         posterior_bp (str): Name of posterior bodypart (e.g., 'tailbase').
         bp_angle (list): Body parts to compute angles for (e.g., ['nose', 'rightear', 'leftear']). Min number of bodyparts = 3.
@@ -444,7 +442,7 @@ def compute_full_features(df_path,
     # Individual features
     individual_features = []
     for ind in individuals:
-        ind_features = compute_individual_features(df, ind, bp_list, head_bp, anterior_bp, posterior_bp, bp_angle)
+        ind_features = compute_individual_features(df, ind, bp_list, anterior_bp, posterior_bp, bp_angle)
         individual_features.append(ind_features)
 
     # Social features
@@ -471,7 +469,6 @@ def compute_full_features(df_path,
 def batch_compute_features(input_dir, 
                             individuals, 
                             bp_list, 
-                            head_bp,
                             anterior_bp, 
                             posterior_bp, 
                             bp_angle, 
@@ -511,7 +508,6 @@ def batch_compute_features(input_dir,
             df_path=h5_file,
             individuals=individuals,
             bp_list=bp_list,
-            head_bp=head_bp,
             anterior_bp=anterior_bp,
             posterior_bp=posterior_bp,
             bp_angle=bp_angle,

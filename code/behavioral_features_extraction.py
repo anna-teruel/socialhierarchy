@@ -1,6 +1,7 @@
 """
 Behavioral feature extraction functions for the analysis of social hierarchy behavior
 @author Anna Teruel-Sanchis, April 2025
+This code is inspired by @author Jorge Iravedra's work, from FalknerLab https://github.com/FalknerLab
 """
 import os
 import glob

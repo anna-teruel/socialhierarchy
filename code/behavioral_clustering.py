@@ -4,6 +4,7 @@ This script loads features from multiple sessions, samples frames uniformly acro
 It also includes functions for visualizing the UMAP embedding and clustering the data using watershed segmentation.
 
 @author Anna Teruel-Sanchis, April 2025
+This code is inspired by @author Jorge Iravedra's work, from FalknerLab https://github.com/FalknerLab
 """
 import numpy as np
 import pandas as pd
@@ -21,8 +22,10 @@ from scipy.cluster.hierarchy import dendrogram, linkage
 import numpy.ma as ma
 import matplotlib.cm as cm
 import seaborn as sns
-from scipy.ndimage import zoom
-
+from scipy.ndimage import zoom, center_of_mass
+from skimage import measure
+from matplotlib.patches import Polygon
+from matplotlib.collections import PatchCollection
 
 
 def load_features(directory, file_format='csv'):
@@ -218,7 +221,7 @@ def map_density(embedding,
                 kde_levels=100,
                 contour_smoothing=3):
     """
-    Compute a smooth density map from a 2D embedding using a KDE plot and identify clusters using 
+    Compute a smooth density map from a 2D embedding using a seaborn KDE plot and identify clusters using 
     watershed segmentation. This function supports optional plotting with smoothed cluster boundaries,
     customizable visual appearance, and saving the resulting figure.
 
@@ -345,6 +348,100 @@ def map_density(embedding,
         plt.show()
 
     return labeled_map, density_map, xe, ye
+
+def map_feature_by_cluster(embedding, 
+                           variable, 
+                           labeled_map, 
+                           xe, 
+                           ye,
+                           agg_func=np.mean, 
+                           cmap='plasma',
+                           save=False, 
+                           save_dir=None, 
+                           format='svg'):
+    """
+    Plot each cluster as an individual vector shape (Polygon), colored by an aggregated behavioral feature.
+    Suitable for SVG export with editable elements.
+
+    Args:
+        embedding (np.ndarray): 2D UMAP coordinates (n x 2).
+        variable (np.ndarray): Variable per point (same n).
+        labeled_map (np.ndarray): 2D map of cluster labels.
+        xe, ye (np.ndarray): Edges used to map embedding to labeled_map.
+        agg_func (function): Function to aggregate values per cluster.
+        cmap (str): Colormap name.
+        save (bool): Whether to save SVG.
+        save_dir (str): Where to save.
+        format (str): File format, e.g. 'svg'.
+
+    Returns:
+        fig, ax
+    """
+    # assign points to clusters
+    xi = np.digitize(embedding[:, 0], xe) - 1
+    yi = np.digitize(embedding[:, 1], ye) - 1
+    valid = (
+        (xi >= 0) & (xi < labeled_map.shape[0]) &
+        (yi >= 0) & (yi < labeled_map.shape[1])
+    )
+    labels = labeled_map[xi[valid], yi[valid]]
+    variable_valid = variable[valid]
+
+    cluster_values = {}
+    for label, val in zip(labels, variable_valid):
+        if label > 0:
+            cluster_values.setdefault(label, []).append(val)
+    label_to_val = {k: agg_func(v) for k, v in cluster_values.items()}
+    all_labels = sorted(label_to_val.keys())
+    all_vals = np.array([label_to_val[k] for k in all_labels])
+    norm = plt.Normalize(vmin=np.min(all_vals), vmax=np.max(all_vals))
+    cmap_obj = cm.get_cmap(cmap)
+
+    fig, ax = plt.subplots(figsize=(14, 12))
+    patches = []
+    colors = []
+
+    for label in all_labels:
+        mask = labeled_map == label
+        if np.sum(mask) < 20:
+            continue
+        contours = measure.find_contours(mask.astype(float), 0.5)
+        color = cmap_obj(norm(label_to_val[label]))
+
+        for contour in contours:
+            contour = np.array(contour)
+            x_contour = xe[0] + (xe[-1] - xe[0]) * contour[:, 0] / labeled_map.shape[0]
+            y_contour = ye[0] + (ye[-1] - ye[0]) * contour[:, 1] / labeled_map.shape[1]
+            poly = Polygon(np.stack([x_contour, y_contour], axis=1), closed=True)
+            patches.append(poly)
+            colors.append(color)
+
+    p = PatchCollection(patches, facecolors=colors, edgecolors='black', linewidths=1)
+    ax.add_collection(p)
+
+    for label in all_labels:
+        mask = labeled_map == label
+        com = center_of_mass(mask)
+        cx = xe[0] + (xe[-1] - xe[0]) * com[0] / labeled_map.shape[0]
+        cy = ye[0] + (ye[-1] - ye[0]) * com[1] / labeled_map.shape[1]
+        ax.text(cx, cy, str(int(label)), color="black", fontsize=10, ha="center", va="center")
+
+    sm = cm.ScalarMappable(norm=norm, cmap=cmap_obj)
+    cbar = fig.colorbar(sm, ax=ax, fraction=0.03, pad=0.04)
+    cbar.ax.tick_params(labelsize=10)
+
+    ax.set_xlim(xe[0], xe[-1])
+    ax.set_ylim(ye[0], ye[-1])
+    ax.set_aspect('equal')
+    ax.axis('off')
+
+    if save and save_dir:
+        path = f"{save_dir}/clusters_features.{format}"
+        plt.savefig(path, dpi=300, format=format, pad_inches=0.5)
+        print(f"Saved SVG to: {path}")
+
+    plt.show()
+    return fig, ax
 
 def hierarchical_clustering(embedding, labeled_map, xe, ye, method='ward', plot=True):
     """

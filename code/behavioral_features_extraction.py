@@ -13,6 +13,27 @@ import seaborn as sns
 from statsmodels.tsa.arima.model import ARIMA
 from scipy.interpolate import CubicSpline
 
+def rename_h5s(h5_path, output_path, rename_map):
+    """
+    Rename individuals of a MultiIndex column in an HDF5 file.
+
+    Args:
+        h5_path (str): Path to input HDF5 file.
+        output_path (str): Path to save the modified HDF5.
+        rename_map (dict): Mapping from old to new individual names, e.g., {'m1': 'ind_1'}
+    """
+    df = pd.read_hdf(h5_path)
+
+    if not isinstance(df.columns, pd.MultiIndex):
+        raise ValueError("The DataFrame does not have a MultiIndex.")
+
+    new_columns = df.columns.to_frame(index=False)
+    new_columns['individuals'] = new_columns['individuals'].map(rename_map).fillna(new_columns['individuals'])
+    df.columns = pd.MultiIndex.from_frame(new_columns)
+
+    df.to_hdf(output_path, key='df', mode='w', format='fixed')
+    print(f"Saved to: {output_path}")
+
 def check_nans(directory, 
                file_format='csv'):
     """
@@ -112,7 +133,7 @@ def interpolate_data(df,
     y = df.loc[:, (slice(None), slice(None), slice(None), 'y')]
     likelihood = df.loc[:, (slice(None), slice(None), slice(None), 'likelihood')]
     
-    scorer = x.columns.levels[0]
+    scorer = x.columns.levels[0][0]
     for individual in x.columns.levels[1]:
         for bodypart in x.columns.levels[2]:
             if method == 'arima':
@@ -522,9 +543,11 @@ def get_social_features(df,
     for ind in individuals:
         features = {}
         ref_hulls = hulls[ind]
-        others = [hulls[other] for other in individuals if other != ind]
-        other_labels = [other for other in individuals if other != ind]
-
+        # others = [hulls[other] for other in individuals if other != ind]
+        # other_labels = [other for other in individuals if other != ind]
+        others = [hulls[other] for other in individuals]
+        other_labels = individuals
+        
         # IoU
         iou_df = get_iou(ref_hulls, others, other_labels)
         for col in iou_df.columns:
@@ -591,22 +614,24 @@ def get_social_features(df,
         #mean centroid distance to all other animals as a global interaction metric
         centroid_dist_cols = [f'{ind}_centroid_to_{other}_centroid_distance' for other in other_labels]
         features['avg_centroid_distance'] = pd.DataFrame({col: features[col] for col in centroid_dist_cols}).mean(axis=1)
-            
+
         features_df = pd.DataFrame(features)
         social_features[ind] = features_df
 
     return social_features
 
-def get_all_features(df_path, 
-                          individuals, 
-                          bp_list, 
-                          head_bp,
-                          anterior_bp, 
-                          posterior_bp, 
-                          bp_angle, 
-                          save_dir=None, 
-                          file_format='csv',
-                          interpolate_method ='spline'):
+
+def get_all_features(df_path,
+                     file_format, 
+                     individuals, 
+                     bp_list, 
+                     head_bp,
+                     anterior_bp, 
+                     posterior_bp, 
+                     bp_angle, 
+                     save_dir=None, 
+                     out_format='csv',
+                     interpolate_method ='spline'):
     """
     Main function to compute both individual and social features, returns one combined DataFrame.
     
@@ -624,7 +649,12 @@ def get_all_features(df_path,
     Returns:
         dict: Dictionary of feature DataFrames, one per individual.
     """
-    df = pd.read_hdf(df_path)
+    if file_format == 'csv':
+        df = pd.read_csv(df_path, header=[0,1,2,3]) #read as multi-index, number of levels in columns
+    elif file_format == 'h5':
+        df = pd.read_hdf(df_path)
+    else:
+        raise ValueError("file_format must be 'csv' or 'h5'")
     df = interpolate_data(df, interpolate_method)
     base_filename = os.path.splitext(os.path.basename(df_path))[0]
 
@@ -645,10 +675,10 @@ def get_all_features(df_path,
 
         # Save per individual
         if save_dir is not None:
-            filename = os.path.join(save_dir, f"{base_filename}_{ind}.{file_format}")
-            if file_format == 'csv':
+            filename = os.path.join(save_dir, f"{base_filename}_{ind}.{out_format}")
+            if out_format == 'csv':
                 merged.to_csv(filename, index=False)
-            elif file_format == 'h5':
+            elif out_format == 'h5':
                 merged.to_hdf(filename, key='df', mode='w')
             else:
                 raise ValueError("file_format must be 'csv' or 'h5'")
@@ -656,14 +686,15 @@ def get_all_features(df_path,
         all_features[ind] = merged
 
 def batch_features(input_dir, 
-                            individuals, 
-                            bp_list, 
-                            head_bp,
-                            anterior_bp, 
-                            posterior_bp, 
-                            bp_angle, 
-                            save_dir=None, 
-                            file_format='csv'):
+                   file_format, 
+                   individuals, 
+                   bp_list, 
+                   head_bp,
+                   anterior_bp, 
+                   posterior_bp, 
+                   bp_angle, 
+                   save_dir, 
+                   out_format):
     """
     Batch process all .h5 files in a directory with get_all_features.
 
@@ -680,12 +711,15 @@ def batch_features(input_dir,
     Returns:
         dict: Dictionary where keys are input filenames and values are dicts of feature DataFrames per individual.
     """
-    h5_files = glob.glob(os.path.join(input_dir, '*.h5'))
+    if file_format == 'h5':
+        files = glob.glob(os.path.join(input_dir, '*.h5'))
+    elif file_format == 'csv':
+        files = glob.glob(os.path.join(input_dir, '*.csv'))
     all_results = {}
 
-    print(f"Found {len(h5_files)} files to process.")
+    print(f"Found {len(files)} files to process.")
 
-    for h5_file in h5_files:
+    for h5_file in files:
         print(f"Processing file: {os.path.basename(h5_file)}")
 
         if save_dir is None:
@@ -696,6 +730,7 @@ def batch_features(input_dir,
 
         results = get_all_features(
             df_path=h5_file,
+            file_format = file_format,
             individuals=individuals,
             bp_list=bp_list,
             head_bp=head_bp,
@@ -703,7 +738,7 @@ def batch_features(input_dir,
             posterior_bp=posterior_bp,
             bp_angle=bp_angle,
             save_dir=save_subdir,
-            file_format=file_format
+            out_format=out_format,
         )
 
         all_results[h5_file] = results

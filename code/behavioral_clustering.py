@@ -26,7 +26,8 @@ from scipy.ndimage import zoom, center_of_mass
 from skimage import measure
 from matplotlib.patches import Polygon
 from matplotlib.collections import PatchCollection
-
+import joblib
+from sklearn.preprocessing import StandardScaler
 
 def load_features(directory, file_format='csv'):
     """
@@ -97,6 +98,19 @@ def sample_frames(directory,file_format, frames_total, random_seed=42):
     sampled_feats = np.vstack(sampled_feats)
     return sampled_feats
 
+def normalize_features(features_array):
+    """
+    Normalize features using StandardScaler (zero mean, unit variance).
+
+    Args:
+        features_array (np.ndarray): Feature array (frames x features).
+
+    Returns:
+        np.ndarray: Normalized feature array.
+    """
+    scaler = StandardScaler()
+    return scaler.fit_transform(features_array)
+
 def run_umap(sampled_feats, n_neighbors=50, min_dist=0.1, n_components=2, random_state=42):
     """
     Run UMAP dimensionality reduction on sampled features.
@@ -129,31 +143,46 @@ def run_umap(sampled_feats, n_neighbors=50, min_dist=0.1, n_components=2, random
     
     return embedding
 
-def train_embedding_model(sampled_feats, embedding, save_model=False, save_path=None):
+
+def train_embedding_model(sampled_feats, embedding, save_model=False, save_path=None, return_details=False):
     """
-    Train a model to predict UMAP embeddings for new data.
+    Train a model to predict UMAP embeddings for new data, using a train-test split.
 
     Args:
-        sampled_feats (np.ndarray): Original high-dimensional features (frames x features).
-        embedding (np.ndarray): Corresponding UMAP embedding (frames x 2).
+        sampled_feats (np.ndarray or pd.DataFrame): Input features (frames x features).
+        embedding (np.ndarray): UMAP 2D embedding (frames x 2).
         save_model (bool): Whether to save the trained model.
-        save_path (str): Path to save the model if save_model=True.
+        save_path (str): Path to save the model (if save_model=True).
+        return_details (bool): If True, return test data and predictions.
 
     Returns:
         MLPRegressor: Trained model.
+        (optional) dict: With x_test, y_test, y_pred, train_score, test_score
     """
     x_train, x_test, y_train, y_test = train_test_split(sampled_feats, embedding, test_size=0.2, random_state=42)
     
-    mlp = MLPRegressor(hidden_layer_sizes=(500, 250, 125, 50), max_iter=500, random_state=42)
+    mlp = MLPRegressor(hidden_layer_sizes=(500, 250, 125, 50), max_iter=2000, random_state=42)
     mlp.fit(x_train, y_train)
     
-    print(f"Training R^2: {mlp.score(x_train, y_train):.2f}")
-    print(f"Testing R^2: {mlp.score(x_test, y_test):.2f}")
+    train_score = mlp.score(x_train, y_train)
+    test_score = mlp.score(x_test, y_test)
+    
+    print(f"Training R^2: {train_score:.2f}")
+    print(f"Testing R^2: {test_score:.2f}")
     
     if save_model and save_path:
-        import joblib
         joblib.dump(mlp, save_path)
         print(f"Model saved to {save_path}")
+    
+    if return_details:
+        y_pred = mlp.predict(x_test)
+        return mlp, {
+            'x_test': x_test,
+            'y_test': y_test,
+            'y_pred': y_pred,
+            'train_score': train_score,
+            'test_score': test_score
+        }
     
     return mlp
 
